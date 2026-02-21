@@ -1,0 +1,3 @@
+aws_region = "us-east-1"
+oracle_vm_ip = "YOUR_ORACLE_VM_IP"
+oracle_vm_postgres_password = "YOUR_POSTGRES_PASSWORD"

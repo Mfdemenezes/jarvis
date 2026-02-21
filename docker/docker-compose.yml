@@ -1,0 +1,127 @@
+version: '3.8'
+
+services:
+  # PostgreSQL com pgvector
+  jarvis-db:
+    image: pgvector/pgvector:pg15
+    container_name: jarvis-db
+    restart: always
+    environment:
+      POSTGRES_DB: personal_kb
+      POSTGRES_USER: assistant
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - jarvis-db-data:/var/lib/postgresql/data
+      - ./init-db.sql:/docker-entrypoint-initdb.d/init.sql
+    ports:
+      - "5432:5432"
+    networks:
+      - jarvis-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U assistant"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Ollama (LLM)
+  jarvis-llm:
+    image: ollama/ollama:latest
+    container_name: jarvis-llm
+    restart: always
+    volumes:
+      - jarvis-llm-data:/root/.ollama
+    ports:
+      - "11434:11434"
+    networks:
+      - jarvis-network
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # FastAPI Application
+  jarvis-app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: jarvis-app
+    restart: always
+    environment:
+      - API_KEY=${API_KEY}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_HOST=jarvis-db
+      - OLLAMA_HOST=jarvis-llm
+    ports:
+      - "8000:8000"
+    depends_on:
+      jarvis-db:
+        condition: service_healthy
+      jarvis-llm:
+        condition: service_healthy
+    networks:
+      - jarvis-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Nginx (Reverse Proxy + PWA)
+  jarvis-web:
+    image: nginx:alpine
+    container_name: jarvis-web
+    restart: always
+    volumes:
+      - ../pwa:/usr/share/nginx/html
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+    ports:
+      - "80:80"
+      - "443:443"
+    depends_on:
+      - jarvis-app
+    networks:
+      - jarvis-network
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Redis (Cache - opcional)
+  jarvis-cache:
+    image: redis:7-alpine
+    container_name: jarvis-cache
+    restart: always
+    volumes:
+      - jarvis-cache-data:/data
+    ports:
+      - "6379:6379"
+    networks:
+      - jarvis-network
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+networks:
+  jarvis-network:
+    name: jarvis-network
+    driver: bridge
+
+volumes:
+  jarvis-db-data:
+    name: jarvis-db-data
+  jarvis-llm-data:
+    name: jarvis-llm-data
+  jarvis-cache-data:
+    name: jarvis-cache-data
