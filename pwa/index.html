@@ -3,9 +3,10 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <meta name="apple-mobile-web-app-title" content="Jarvis">
+    <link rel="icon" type="image/x-icon" href="/favicon.ico">
     <link rel="apple-touch-icon" href="/icon-192.png">
     <link rel="manifest" href="/manifest.json">
     <title>Jarvis - Assistente Pessoal</title>
@@ -27,6 +28,7 @@
         }
         
         .header {
+            position: relative;
             padding: 20px;
             text-align: center;
             background: rgba(255,255,255,0.05);
@@ -109,6 +111,19 @@
             backdrop-filter: blur(10px);
         }
         
+        #send-button {
+            width: 60px;
+            height: 60px;
+            border-radius: 50%;
+            border: none;
+            background: linear-gradient(135deg, #00c853 0%, #00e676 100%);
+            font-size: 24px;
+            cursor: pointer;
+            transition: all 0.3s;
+            flex-shrink: 0;
+            color: #fff;
+        }
+        #send-button:active { transform: scale(0.95); }
         #mic-button {
             width: 60px;
             height: 60px;
@@ -182,6 +197,8 @@
 <body>
     <div class="header">
         <h1>JARVIS <span class="status online" id="status"></span></h1>
+        <button id="notify-btn" onclick="enableNotifications()" style="position:absolute;left:15px;top:18px;background:none;border:1px solid rgba(255,255,255,0.3);color:#fff;padding:5px 10px;border-radius:15px;font-size:11px;cursor:pointer;display:none;">Ativar Alertas</button>
+        <button id="logout-btn" onclick="logout()" style="position:absolute;right:15px;top:18px;background:none;border:1px solid rgba(255,255,255,0.3);color:#fff;padding:5px 12px;border-radius:15px;font-size:12px;cursor:pointer;">Sair</button>
     </div>
     
     <div class="chat-container" id="chat"></div>
@@ -194,32 +211,59 @@
     
     <div class="controls">
         <input type="text" id="text-input" placeholder="Digite ou fale sua mensagem...">
+        <button id="send-button">➤</button>
         <button id="mic-button">🎤</button>
     </div>
 
     <script>
         // Configuração
-        const API_URL = 'https://seu-dominio.com/chat';  // Alterar para seu domínio
-        const API_KEY = 'SUA_API_KEY_AQUI';  // Alterar para sua API Key
+        const API_URL = '/chat';  // Alterar para seu domínio
+        const API_KEY = 'b2e926c0585b9d122a321d2c43447a2f164049842be2dd6843a452c251de718c';  // Alterar para sua API Key
         
         // Elementos
         const chat = document.getElementById('chat');
         const textInput = document.getElementById('text-input');
         const micButton = document.getElementById('mic-button');
+        const sendButton = document.getElementById('send-button');
         const loading = document.getElementById('loading');
         const status = document.getElementById('status');
         
-        // Speech Recognition
-        const recognition = new (window.SpeechRecognition || window.webkitSpeechRecognition)();
-        recognition.lang = 'pt-BR';
-        recognition.continuous = false;
-        recognition.interimResults = false;
+        // Speech Recognition - usa Web Speech API se disponível, senão grava e envia pro Whisper
+        let useWhisper = false;
+        let mediaRecorder = null;
+        let audioChunks = [];
+        let recognition = null;
+        const isStandalone = window.navigator.standalone || window.matchMedia('(display-mode: standalone)').matches;
+        if (!isStandalone) {
+            try {
+                recognition = new (window.SpeechRecognition || window.webkitSpeechRecognition)();
+                recognition.lang = 'pt-BR';
+                recognition.continuous = false;
+                recognition.interimResults = false;
+            } catch(e) {
+                useWhisper = true;
+            }
+        } else {
+            useWhisper = true;
+        }
         
         // Speech Synthesis
         const synth = window.speechSynthesis;
         
         // Estado
         let isListening = false;
+        let userLat = null, userLon = null;
+        
+        function updateLocation() {
+            if (navigator.geolocation) {
+                navigator.geolocation.getCurrentPosition(
+                    pos => { userLat = pos.coords.latitude; userLon = pos.coords.longitude; },
+                    () => {}, {enableHighAccuracy: false, timeout: 5000, maximumAge: 300000}
+                );
+            }
+        }
+        updateLocation();
+        setInterval(updateLocation, 300000);
         
         // Adicionar mensagem ao chat
         function addMessage(text, type) {
@@ -235,6 +279,13 @@
             const utterance = new SpeechSynthesisUtterance(text);
             utterance.lang = 'pt-BR';
             utterance.rate = 1.0;
+            utterance.pitch = 0.9;
+            const voices = synth.getVoices();
+            const male = voices.find(v => /luciano/i.test(v.name) && v.lang.startsWith('pt'))
+                      || voices.find(v => v.lang.startsWith('pt') && /male/i.test(v.name) && !/female/i.test(v.name))
+                      || voices.find(v => v.lang.startsWith('pt') && !/luciana|female|feminino|maria|ana/i.test(v.name));
+            if (male) utterance.voice = male;
+            utterance.pitch = 0.7;
             synth.speak(utterance);
         }
         
@@ -252,7 +303,7 @@
                         'Content-Type': 'application/json',
                         'X-Api-Key': API_KEY
                     },
-                    body: JSON.stringify({ message: text })
+                    body: JSON.stringify({ message: text, lat: userLat, lon: userLon })
                 });
                 
                 if (!response.ok) {
@@ -281,44 +332,156 @@
             }
         });
         
+        sendButton.addEventListener('click', () => {
+            if (textInput.value.trim()) {
+                sendMessage(textInput.value);
+                textInput.value = '';
+            }
+        });
+        
+        async function startWhisperRecording() {
+            const stream = await navigator.mediaDevices.getUserMedia({audio: true});
+            audioChunks = [];
+            mediaRecorder = new MediaRecorder(stream, {mimeType: 'audio/webm'});
+            mediaRecorder.ondataavailable = e => audioChunks.push(e.data);
+            mediaRecorder.onstop = async () => {
+                stream.getTracks().forEach(t => t.stop());
+                const blob = new Blob(audioChunks, {type: 'audio/webm'});
+                const formData = new FormData();
+                formData.append('file', blob, 'audio.webm');
+                formData.append('model', 'whisper-1');
+                formData.append('language', 'pt');
+                micButton.classList.remove('listening');
+                isListening = false;
+                loading.classList.add('active');
+                try {
+                    const r = await fetch('/api/transcribe', {
+                        method: 'POST',
+                        headers: {'X-Api-Key': API_KEY},
+                        body: formData
+                    });
+                    const d = await r.json();
+                    if (d.text) {
+                        textInput.value = d.text;
+                        sendMessage(d.text);
+                        textInput.value = '';
+                    }
+                } catch(e) { console.error('Whisper error:', e); }
+                loading.classList.remove('active');
+            };
+            mediaRecorder.start();
+            isListening = true;
+            micButton.classList.add('listening');
+        }
+
         micButton.addEventListener('click', () => {
             if (isListening) {
-                recognition.stop();
+                if (useWhisper && mediaRecorder) { mediaRecorder.stop(); }
+                else if (recognition) { recognition.stop(); }
+                return;
+            }
+            if (useWhisper || !recognition) {
+                startWhisperRecording();
             } else {
                 recognition.start();
             }
         });
         
-        recognition.onstart = () => {
-            isListening = true;
-            micButton.classList.add('listening');
-        };
-        
-        recognition.onend = () => {
-            isListening = false;
-            micButton.classList.remove('listening');
-        };
-        
-        recognition.onresult = (event) => {
-            const text = event.results[0][0].transcript;
-            textInput.value = text;
-            sendMessage(text);
-            textInput.value = '';
-        };
-        
-        recognition.onerror = (event) => {
-            console.error('Erro no reconhecimento:', event.error);
-            isListening = false;
-            micButton.classList.remove('listening');
-        };
+        if (recognition) {
+            recognition.onstart = () => { isListening = true; micButton.classList.add('listening'); };
+            recognition.onend = () => { isListening = false; micButton.classList.remove('listening'); };
+            recognition.onresult = (event) => {
+                const text = event.results[0][0].transcript;
+                textInput.value = text;
+                sendMessage(text);
+                textInput.value = '';
+            };
+            recognition.onerror = (event) => {
+                console.error('Speech error, switching to Whisper:', event.error);
+                isListening = false;
+                micButton.classList.remove('listening');
+                if (event.error === 'not-allowed' || event.error === 'service-not-allowed') {
+                    useWhisper = true;
+                    startWhisperRecording();
+                }
+            };
+        } else { useWhisper = true; }
         
         // Service Worker
         if ('serviceWorker' in navigator) {
             navigator.serviceWorker.register('/sw.js');
+            navigator.serviceWorker.ready.then(reg => { window._swReg = reg; });
         }
         
+        function logout() {
+            window.location.href = '/api/logout';
+        }
+        
+        
+        // Desbloquear audio no iOS
+        document.addEventListener('click', function unlock() {
+            const u = new SpeechSynthesisUtterance('');
+            u.volume = 0;
+            synth.speak(u);
+            document.removeEventListener('click', unlock);
+        }, {once: true});
+        
+        // Mostrar botão de notificação se não autorizado
+        if ('Notification' in window && Notification.permission === 'default') {
+            document.getElementById('notify-btn').style.display = 'block';
+        }
+
+        async function enableNotifications() {
+            const perm = await Notification.requestPermission();
+            if (perm === 'granted' && window._swReg) {
+                try {
+                    const r = await fetch('/api/vapid-public-key');
+                    const {publicKey} = await r.json();
+                    const sub = await window._swReg.pushManager.subscribe({
+                        userVisibleOnly: true,
+                        applicationServerKey: Uint8Array.from(atob(publicKey.replace(/-/g,'+').replace(/_/g,'/')), c => c.charCodeAt(0))
+                    });
+                    await fetch('/api/push/subscribe', {
+                        method: 'POST',
+                        headers: {'Content-Type':'application/json'},
+                        body: JSON.stringify(sub.toJSON())
+                    });
+                    document.getElementById('notify-btn').style.display = 'none';
+                    addMessage('Alertas ativados! Vou te notificar sobre emails importantes.', 'assistant');
+                } catch(e) { addMessage('Erro ao ativar alertas: ' + e.message, 'assistant'); }
+            }
+        }
+
+        // Auto-subscribe se já autorizado
+        if ('Notification' in window && Notification.permission === 'granted') {
+            navigator.serviceWorker.ready.then(async reg => {
+                try {
+                    const existing = await reg.pushManager.getSubscription();
+                    if (existing) {
+                        await fetch('/api/push/subscribe', {
+                            method: 'POST',
+                            headers: {'Content-Type':'application/json'},
+                            body: JSON.stringify(existing.toJSON())
+                        });
+                    } else {
+                        const r = await fetch('/api/vapid-public-key');
+                        const {publicKey} = await r.json();
+                        const sub = await reg.pushManager.subscribe({
+                            userVisibleOnly: true,
+                            applicationServerKey: Uint8Array.from(atob(publicKey.replace(/-/g,'+').replace(/_/g,'/')), c => c.charCodeAt(0))
+                        });
+                        await fetch('/api/push/subscribe', {
+                            method: 'POST',
+                            headers: {'Content-Type':'application/json'},
+                            body: JSON.stringify(sub.toJSON())
+                        });
+                    }
+                } catch(e) { console.error('Auto-push error:', e); }
+            });
+        }
+
         // Mensagem inicial
-        addMessage('Olá! Sou o Jarvis, seu assistente pessoal. Como posso ajudar?', 'assistant');
+        addMessage('Oi, como posso te ajudar senhor Marcelo?', 'assistant');
     </script>
 </body>
 </html>

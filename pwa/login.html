@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="Jarvis">
+    <link rel="icon" type="image/x-icon" href="/favicon.ico">
+    <link rel="apple-touch-icon" href="/icon-192.png">
+    <title>Jarvis - Login</title>
+    <style>
+        * { margin:0; padding:0; box-sizing:border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            background: #000000;
+            color: #fff;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            position: relative;
+        }
+        .bg-logo {
+            width: 40vmin;
+            height: 40vmin;
+            max-width: 250px;
+            max-height: 250px;
+            opacity: 0.8;
+            background: url('/logo-jarvis.png') center/contain no-repeat;
+            margin-top: 5vh;
+            flex-shrink: 0;
+        }
+        .login-box {
+            background: rgba(255,255,255,0.08);
+            backdrop-filter: blur(20px);
+            border: 1px solid rgba(255,255,255,0.15);
+            border-radius: 20px;
+            padding: 40px 35px;
+            margin-top: 3vh;
+            margin-bottom: 0;
+            width: 320px;
+            text-align: center;
+        }
+        .login-box h1 {
+            font-size: 28px;
+            font-weight: 300;
+            letter-spacing: 3px;
+            margin-bottom: 8px;
+        }
+        .login-box p {
+            font-size: 13px;
+            color: rgba(255,255,255,0.5);
+            margin-bottom: 30px;
+        }
+        .login-box input {
+            width: 100%;
+            padding: 14px 18px;
+            border-radius: 12px;
+            border: 1px solid rgba(255,255,255,0.2);
+            background: rgba(255,255,255,0.08);
+            color: #fff;
+            font-size: 15px;
+            outline: none;
+            margin-bottom: 12px;
+            transition: border 0.3s;
+        }
+        .login-box input:focus { border-color: #667eea; }
+        .login-box input::placeholder { color: rgba(255,255,255,0.4); }
+        .login-box button {
+            width: 100%;
+            padding: 14px;
+            border-radius: 12px;
+            border: none;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: #fff;
+            font-size: 16px;
+            cursor: pointer;
+            margin-top: 8px;
+            transition: transform 0.2s;
+        }
+        .login-box button:active { transform: scale(0.97); }
+        .error { color: #ff6b6b; font-size: 13px; margin-top: 10px; display: none; }
+    </style>
+</head>
+<body>
+    <div class="bg-logo"></div>
+    <div class="login-box">
+        <h1>JARVIS</h1>
+        <p>Assistente Pessoal</p>
+        <form id="loginForm">
+            <input type="text" id="user" placeholder="Usuário" autocomplete="username" required>
+            <input type="password" id="pass" placeholder="Senha" autocomplete="current-password" required>
+            <button type="submit">Entrar</button>
+        </form>
+        <div class="error" id="error">Usuário ou senha incorretos</div>
+    </div>
+    <script>
+        document.getElementById('loginForm').addEventListener('submit', async function(e) {
+            e.preventDefault();
+            e.stopPropagation();
+            const user = document.getElementById('user').value;
+            const pass = document.getElementById('pass').value;
+            try {
+                const r = await fetch('/api/login', {
+                    method: 'POST',
+                    headers: {'Content-Type':'application/json'},
+                    body: JSON.stringify({username: user, password: pass})
+                });
+                if (r.ok) {
+                    window.location.replace('/app');
+                } else {
+                    document.getElementById('error').style.display = 'block';
+                }
+            } catch(e) {
+                document.getElementById('error').style.display = 'block';
+            }
+        });
+    </script>
+</body>
+</html>

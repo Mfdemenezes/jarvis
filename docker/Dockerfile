@@ -15,7 +15,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Copiar código
 COPY main.py .
-COPY pwa/ ./pwa/
+# COPY pwa/ ./pwa/
 
 # Criar usuário não-root
 RUN useradd -m -u 1000 jarvis && chown -R jarvis:jarvis /app
