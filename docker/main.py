@@ -273,9 +273,72 @@ async def check_important_emails():
         except:
             pass
 
+# Aliases financeiros
+DESCRICAO_ALIASES_DEFAULT = {"PADA": "Padaria", "ZONA": "Mercado Zona Sul", "SUP": "Supermercado", "FARM": "Farmacia", "POST": "Posto de Gasolina", "REST": "Restaurante", "UBER": "Uber", "IFOOD": "iFood", "AUTO": "Auto Posto", "DROG": "Drogaria", "MERC": "Mercado"}
+
+def load_aliases():
+    aliases = dict(DESCRICAO_ALIASES_DEFAULT)
+    if REDIS_AVAILABLE:
+        saved = redis_client.get("fin_aliases")
+        if saved: aliases.update(json.loads(saved))
+    return aliases
+
+def save_alias(abrev, nome):
+    aliases = load_aliases()
+    aliases[abrev.upper()] = nome
+    if REDIS_AVAILABLE: redis_client.set("fin_aliases", json.dumps(aliases))
+    return aliases
+
+async def normalize_descriptions():
+    while True:
+        await asyncio.sleep(1200)
+        try:
+            svc = get_gmail_service()
+            if not svc: continue
+            sheets = build("sheets", "v4", credentials=gmail_credentials)
+            result = sheets.spreadsheets().values().get(spreadsheetId=SHEET_ID, range="Pagina1!A1:Z10000").execute()
+            rows = result.get("values", [])
+            if len(rows) < 2: continue
+            header = rows[0]
+            desc_col = next((i for i, h in enumerate(header) if "descri" in h.lower()), None)
+            if desc_col is None: continue
+            aliases = load_aliases()
+            updates, unknown = [], []
+            for i, row in enumerate(rows[1:], start=2):
+                if desc_col >= len(row): continue
+                desc = row[desc_col].strip()
+                if not desc or len(desc) > 30: continue
+                matched = False
+                for alias, full_name in aliases.items():
+                    if desc.upper() == alias.upper() or desc.upper().startswith(alias.upper()):
+                        if desc != full_name:
+                            updates.append({"range": f"Pagina1!{chr(65+desc_col)}{i}", "values": [[full_name]]})
+                        matched = True; break
+                if not matched and len(desc) <= 10 and desc.upper() == desc:
+                    unknown.append({"row": i, "desc": desc})
+            if unknown and OPENAI_API_KEY:
+                descs_str = ", ".join(['"' + u["desc"] + '"' for u in unknown[:20]])
+                prompt_sys = "Voce recebe abreviacoes de estabelecimentos comerciais brasileiros de emails de cartao. Retorne APENAS JSON: {ABREV: Nome completo}. Se nao souber, mantenha o original."
+                async with httpx.AsyncClient(timeout=30.0) as client:
+                    r = await client.post("https://api.openai.com/v1/chat/completions", headers={"Authorization": f"Bearer {OPENAI_API_KEY}"}, json={"model": "gpt-4o-mini", "messages": [{"role": "system", "content": prompt_sys}, {"role": "user", "content": f"Normalize: {descs_str}"}], "max_tokens": 500})
+                    resp = r.json()["choices"][0]["message"]["content"]
+                    if "{" in resp:
+                        mapping = json.loads(resp[resp.index("{"):resp.rindex("}")+1])
+                        for u in unknown:
+                            full = mapping.get(u["desc"], u["desc"])
+                            if full != u["desc"]:
+                                updates.append({"range": f"Pagina1!{chr(65+desc_col)}{u['row']}", "values": [[full]]})
+                                save_alias(u["desc"], full)
+            if updates:
+                sheets.spreadsheets().values().batchUpdate(spreadsheetId=SHEET_ID, body={"valueInputOption": "USER_ENTERED", "data": updates}).execute()
+                print(f"Normalizadas {len(updates)} descricoes")
+        except Exception as e:
+            print(f"Erro normalizar descricoes: {e}")
+
 @app.on_event("startup")
 async def start_email_cron():
     asyncio.create_task(check_important_emails())
+    asyncio.create_task(normalize_descriptions())
 
 @app.get("/health")
 async def health():
@@ -338,6 +401,15 @@ async def chat(
             if a: hist_lines.append(f"Jarvis: {a}")
         context = "\n".join(hist_lines) + "\n" + mem_context
         
+        # Ensinar alias: "PADA eh padaria"
+        import re as _re_alias
+        _am = _re_alias.match(r'(.{2,15})\s+(?:e|eh|significa|quer dizer|=)\s+(.+)', request.message.strip(), _re_alias.IGNORECASE)
+        if _am:
+            _abrev = _am.group(1).strip()
+            _nome = _am.group(2).strip().rstrip('.!?')
+            save_alias(_abrev, _nome)
+            return ChatResponse(response=f'Beleza! Agora "{_abrev.upper()}" vira "{_nome}" na planilha.', context_used=0, cached=False)
+
         # Detectar intencao e buscar dados reais
         msg_lower = request.message.lower()
         print(f"CHAT: {request.message}")
@@ -731,6 +803,11 @@ def get_gmail_service():
             gmail_credentials = Credentials(**data)
     if not gmail_credentials:
         return None
+    if gmail_credentials.expired and gmail_credentials.refresh_token:
+        from google.auth.transport.requests import Request
+        gmail_credentials.refresh(Request())
+        if REDIS_AVAILABLE:
+            redis_client.set("gmail_token", json.dumps({"token": gmail_credentials.token, "refresh_token": gmail_credentials.refresh_token, "token_uri": gmail_credentials.token_uri, "client_id": gmail_credentials.client_id, "client_secret": gmail_credentials.client_secret}))
     return build("gmail", "v1", credentials=gmail_credentials)
 
 @app.get("/emails")
