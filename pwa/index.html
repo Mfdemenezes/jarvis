@@ -247,9 +247,6 @@
             useWhisper = true;
         }
         
-        // Speech Synthesis
-        const synth = window.speechSynthesis;
-        
         // Estado
         let isListening = false;
         let userLat = null, userLon = null;
@@ -272,21 +269,6 @@
             message.textContent = text;
             chat.appendChild(message);
             chat.scrollTop = chat.scrollHeight;
-        }
-        
-        // Falar texto
-        function speak(text) {
-            const utterance = new SpeechSynthesisUtterance(text);
-            utterance.lang = 'pt-BR';
-            utterance.rate = 1.0;
-            utterance.pitch = 0.9;
-            const voices = synth.getVoices();
-            const male = voices.find(v => /luciano/i.test(v.name) && v.lang.startsWith('pt'))
-                      || voices.find(v => v.lang.startsWith('pt') && /male/i.test(v.name) && !/female/i.test(v.name))
-                      || voices.find(v => v.lang.startsWith('pt') && !/luciana|female|feminino|maria|ana/i.test(v.name));
-            if (male) utterance.voice = male;
-            utterance.pitch = 0.7;
-            synth.speak(utterance);
         }
         
         // Enviar mensagem
@@ -312,7 +294,6 @@
                 
                 const data = await response.json();
                 addMessage(data.response, 'assistant');
-                speak(data.response);
                 
                 status.className = 'status online';
             } catch (error) {
@@ -416,15 +397,6 @@
         function logout() {
             window.location.href = '/api/logout';
         }
-        
-        
-        // Desbloquear audio no iOS
-        document.addEventListener('click', function unlock() {
-            const u = new SpeechSynthesisUtterance('');
-            u.volume = 0;
-            synth.speak(u);
-            document.removeEventListener('click', unlock);
-        }, {once: true});
         
         // Mostrar botão de notificação se não autorizado
         if ('Notification' in window && Notification.permission === 'default') {

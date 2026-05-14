@@ -26,6 +26,8 @@ ACTIVE_SESSIONS = set()
 OPENWEATHER_KEY = os.getenv("OPENWEATHER_API_KEY")
 NEWSAPI_KEY = os.getenv("NEWSAPI_KEY")
 GOOGLE_MAPS_KEY = os.getenv("GOOGLE_MAPS_KEY", "")
+GOOGLE_SEARCH_KEY = os.getenv("GOOGLE_SEARCH_KEY", GOOGLE_MAPS_KEY)
+GOOGLE_SEARCH_CX = os.getenv("GOOGLE_SEARCH_CX", "")
 SHEET_ID = "1RjwiT3F-ubct12QHGyFu-YisARrAVQJzKCTM7VA__gU"
 EVO_URL = os.getenv("EVO_URL", "")
 EVO_KEY = os.getenv("EVO_KEY", "")
@@ -42,6 +44,21 @@ GMAIL_CLIENT_SECRET = os.getenv("GMAIL_CLIENT_SECRET")
 GMAIL_REDIRECT_URI = "https://jarvis.mbam.com.br/auth/callback"
 GMAIL_SCOPES = ["https://www.googleapis.com/auth/gmail.readonly", "https://www.googleapis.com/auth/gmail.compose", "https://www.googleapis.com/auth/calendar.events", "https://www.googleapis.com/auth/calendar.readonly", "https://www.googleapis.com/auth/spreadsheets"]
 gmail_credentials = None
+
+SYSTEM_PROMPT = """Você é o Jarvis, assistente pessoal de elite do Marcelo Menezes.
+Você é proativo, inteligente e informal, agindo como um braço direito.
+Suas respostas devem ser curtas, diretas e entregues EXCLUSIVAMENTE via texto no chat.
+Não mencione comandos de voz ou capacidade de falar.
+
+Suas capacidades reais incluem:
+1. INTERNET: Você tem acesso ao Google Search para pesquisar qualquer fato atual, preços ou informações gerais.
+2. FINANÇAS: Você gerencia planilhas Google, registra gastos, dá saldos e categoriza despesas.
+3. COMUNICAÇÃO: Você envia mensagens de WhatsApp, lê e redige E-mails (Gmail) e gerencia a Agenda (Google Calendar).
+4. UTILIDADES: Você fornece previsão do tempo real, cotação de moedas/cripto e trânsito (Google Maps).
+
+O Marcelo mora em Miguel Pereira, RJ (Rua de Paiva 124). Quando ele falar 'casa', é lá.
+Hoje é {today}. Quando tiver dados reais no contexto, use-os na resposta.
+Nunca diga que não pode fazer algo sem tentar usar suas ferramentas primeiro."""
 
 app = FastAPI(title="Jarvis API", version="2.0")
 
@@ -127,9 +144,25 @@ def search_memory(query: str, limit: int = 5):
     return [{"content": r[0], "metadata": r[1], "date": str(r[2])} for r in results]
 
 # Chamar LLM
+async def search_google(query: str):
+    if not GOOGLE_SEARCH_KEY or not GOOGLE_SEARCH_CX:
+        return "Google Search não configurado."
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            r = await client.get("https://www.googleapis.com/customsearch/v1",
+                params={"key": GOOGLE_SEARCH_KEY, "cx": GOOGLE_SEARCH_CX, "q": query})
+            data = r.json()
+            items = data.get("items", [])
+            results = []
+            for item in items[:3]:
+                results.append(f"{item['title']}: {item['snippet']}")
+            return "\n".join(results) if results else "Nenhum resultado encontrado."
+    except Exception as e:
+        return f"Erro na busca: {str(e)}"
+
 async def call_ollama(prompt: str, context: str = ""):
     today = datetime.now().strftime("%Y-%m-%d %H:%M")
-    system = "Voc\xea \xe9 Jarvis, assistente pessoal do Marcelo. Responda de forma curta, direta e informal, como um amigo. M\xe1ximo 2-3 frases. Use linguagem casual. O Marcelo mora em Miguel Pereira, RJ (Rua de Paiva 124). Quando ele falar casa, \xe9 l\xe1. Hoje \xe9 " + today + ". Quando tiver dados reais no contexto, use-os na resposta."
+    system = SYSTEM_PROMPT.format(today=today)
     if OPENAI_API_KEY:
         async with httpx.AsyncClient(timeout=30.0) as client:
             r = await client.post("https://api.openai.com/v1/chat/completions",
@@ -414,6 +447,18 @@ async def chat(
         msg_lower = request.message.lower()
         print(f"CHAT: {request.message}")
         import re as _re
+        
+        # Busca Geral no Google (Gatilho)
+        search_triggers = ["pesquise", "quem é", "quem foi", "o que é", "onde fica", "preço de", "como fazer", "significado de", "notícias sobre", "resultado do", "quem ganhou"]
+        if any(w in msg_lower for w in search_triggers):
+            search_query = request.message
+            for w in search_triggers:
+                if msg_lower.startswith(w):
+                    search_query = request.message[len(w):].strip()
+                    break
+            google_results = await search_google(search_query)
+            context += f"\n\nResultados da busca Google para '{search_query}':\n{google_results}"
+
         is_finance = any(w in msg_lower for w in ["gasto", "despesa", "receita", "planilha", "pagamento", "supermercado", "conta", "financ"])
         if any(w in msg_lower for w in ["clima", "tempo", "temperatura", "chuva", "chover", "frio", "calor", "previsao", "previsão", "weather"]):
             try:
@@ -425,20 +470,7 @@ async def chat(
                     wr = await wc.get(f"https://api.openweathermap.org/data/2.5/weather?q={city}&appid={OPENWEATHER_KEY}&units=metric&lang=pt_br")
                     wd = wr.json()
                     context += f"\n\nClima em {city}: {wd['weather'][0]['description']}, {wd['main']['temp']}°C, sensação {wd['main']['feels_like']}°C, umidade {wd['main']['humidity']}%, vento {wd['wind']['speed']}m/s"
-            except Exception as _we:
-                pass
-                pass
-        if any(w in msg_lower for w in ["clima", "tempo", "temperatura", "chuva", "chover", "frio", "calor", "previsao", "previsão"]):
-            try:
-                import requests as _req
-                city = "Miguel Pereira"
-                for c in ["são paulo", "sp", "rio", "rj", "curitiba", "brasilia", "salvador", "recife", "fortaleza", "manaus", "porto alegre", "florianopolis", "bh", "belo horizonte"]:
-                    if c in msg_lower: city = c; break
-                r = _req.get(f"https://wttr.in/{city}?format=%C+%t+%h+%w&lang=pt", timeout=5)
-                context += f"\n\nClima atual em {city}: {r.text.strip()}"
-            except Exception as _we:
-                pass
-                pass
+            except: pass
         if any(w in msg_lower for w in ["noticia", "notícia", "noticias", "notícias", "news", "manchete", "jornal", "acontecendo", "novidades"]):
             try:
                 async with httpx.AsyncClient(timeout=10.0) as nc:
