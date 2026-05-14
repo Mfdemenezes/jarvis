@@ -749,9 +749,9 @@ async def get_history(
     cur = conn.cursor()
     
     cur.execute("""
-        SELECT user_message, assistant_response, timestamp
+        SELECT user_message, assistant_response, created_at
         FROM conversations
-        ORDER BY timestamp DESC
+        ORDER BY created_at DESC
         LIMIT %s
     """, (limit,))
     
