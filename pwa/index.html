@@ -79,6 +79,8 @@
             padding: 15px 20px;
             border-radius: 20px;
             animation: slideIn 0.3s ease;
+            white-space: pre-wrap;
+            word-wrap: break-word;
         }
         
         @keyframes slideIn {
@@ -103,6 +105,49 @@
             backdrop-filter: blur(10px);
         }
         
+        .quick-actions {
+            display: flex;
+            gap: 8px;
+            padding: 0 20px 12px 20px;
+            overflow-x: auto;
+            background: rgba(255,255,255,0.05);
+        }
+
+        .quick-actions::-webkit-scrollbar { display: none; }
+
+        .chip {
+            flex-shrink: 0;
+            padding: 8px 16px;
+            border-radius: 20px;
+            border: 1px solid rgba(255,255,255,0.2);
+            background: rgba(255,255,255,0.08);
+            color: #fff;
+            font-size: 13px;
+            cursor: pointer;
+            white-space: nowrap;
+            transition: background 0.2s;
+        }
+
+        .chip:active { background: rgba(255,255,255,0.2); }
+
+        .confirm-row {
+            display: flex;
+            gap: 10px;
+            margin-top: 8px;
+        }
+
+        .confirm-btn {
+            padding: 8px 18px;
+            border-radius: 16px;
+            border: none;
+            font-size: 14px;
+            cursor: pointer;
+            color: #fff;
+        }
+
+        .confirm-btn.yes { background: linear-gradient(135deg, #00c853 0%, #00e676 100%); }
+        .confirm-btn.no { background: rgba(255,255,255,0.15); }
+
         .controls {
             padding: 20px;
             display: flex;
@@ -198,7 +243,7 @@
     <div class="header">
         <h1>JARVIS <span class="status online" id="status"></span></h1>
         <button id="notify-btn" onclick="enableNotifications()" style="position:absolute;left:15px;top:18px;background:none;border:1px solid rgba(255,255,255,0.3);color:#fff;padding:5px 10px;border-radius:15px;font-size:11px;cursor:pointer;display:none;">Ativar Alertas</button>
-        <button id="logout-btn" onclick="logout()" style="position:absolute;right:15px;top:18px;background:none;border:1px solid rgba(255,255,255,0.3);color:#fff;padding:5px 12px;border-radius:15px;font-size:12px;cursor:pointer;">Sair</button>
+        <a href="/status" target="_blank" style="position:absolute;right:90px;top:18px;background:none;border:1px solid rgba(255,255,255,0.3);color:#fff;padding:5px 10px;border-radius:15px;font-size:11px;cursor:pointer;text-decoration:none;">⚡ Status</a><button id="logout-btn" onclick="logout()" style="position:absolute;right:15px;top:18px;background:none;border:1px solid rgba(255,255,255,0.3);color:#fff;padding:5px 12px;border-radius:15px;font-size:12px;cursor:pointer;">Sair</button>
     </div>
     
     <div class="chat-container" id="chat"></div>
@@ -208,7 +253,14 @@
         <span></span>
         <span></span>
     </div>
-    
+
+    <div class="quick-actions" id="quick-actions">
+        <button class="chip" data-msg="o que eu tenho na agenda hoje?">📅 Agenda hoje</button>
+        <button class="chip" data-msg="o que eu tenho agendado essa semana?">🗓️ Essa semana</button>
+        <button class="chip" data-msg="quais lembretes eu tenho?">⏰ Lembretes</button>
+        <button class="chip" data-msg="quais foram meus ultimos emails?">📧 Emails</button>
+    </div>
+
     <div class="controls">
         <input type="text" id="text-input" placeholder="Digite ou fale sua mensagem...">
         <button id="send-button">➤</button>
@@ -218,7 +270,7 @@
     <script>
         // Configuração
         const API_URL = '/chat';  // Alterar para seu domínio
-        const API_KEY = 'b2e926c0585b9d122a321d2c43447a2f164049842be2dd6843a452c251de718c';  // Alterar para sua API Key
+        const API_KEY = 'b6829dad41c9df6f434f49017032fc47abb717e680975ada261274fc8447c424';  // Alterar para sua API Key
         
         // Elementos
         const chat = document.getElementById('chat');
@@ -227,6 +279,11 @@
         const sendButton = document.getElementById('send-button');
         const loading = document.getElementById('loading');
         const status = document.getElementById('status');
+
+        // Health check inicial
+        fetch("/health").then(r => r.json()).then(d => {
+            status.className = d.status === "healthy" ? "status online" : "status offline";
+        }).catch(() => { status.className = "status offline"; });
         
         // Speech Recognition - usa Web Speech API se disponível, senão grava e envia pro Whisper
         let useWhisper = false;
@@ -267,6 +324,24 @@
             const message = document.createElement('div');
             message.className = `message ${type}`;
             message.textContent = text;
+
+            if (type === 'assistant' && text.includes('(sim/não)')) {
+                const row = document.createElement('div');
+                row.className = 'confirm-row';
+                const yes = document.createElement('button');
+                yes.className = 'confirm-btn yes';
+                yes.textContent = '✅ Sim';
+                const no = document.createElement('button');
+                no.className = 'confirm-btn no';
+                no.textContent = '❌ Não';
+                const answer = (word) => { row.remove(); sendMessage(word); };
+                yes.addEventListener('click', () => answer('sim'));
+                no.addEventListener('click', () => answer('não'));
+                row.appendChild(yes);
+                row.appendChild(no);
+                message.appendChild(row);
+            }
+
             chat.appendChild(message);
             chat.scrollTop = chat.scrollHeight;
         }
@@ -306,6 +381,10 @@
         }
         
         // Event Listeners
+        document.querySelectorAll('.chip').forEach(btn => {
+            btn.addEventListener('click', () => sendMessage(btn.dataset.msg));
+        });
+
         textInput.addEventListener('keypress', (e) => {
             if (e.key === 'Enter') {
                 sendMessage(textInput.value);
@@ -452,8 +531,26 @@
             });
         }
 
-        // Mensagem inicial
-        addMessage('Oi, como posso te ajudar senhor Marcelo?', 'assistant');
+        // Carregar histórico ao abrir
+        async function loadHistory() {
+            try {
+                const r = await fetch('/history?limit=20', {
+                    headers: {'X-Api-Key': API_KEY}
+                });
+                const data = await r.json();
+                if (data.length > 0) {
+                    data.reverse().forEach(item => {
+                        if (item.user) addMessage(item.user, 'user');
+                        if (item.assistant) addMessage(item.assistant, 'assistant');
+                    });
+                } else {
+                    addMessage('Oi, como posso te ajudar senhor Marcelo?', 'assistant');
+                }
+            } catch(e) {
+                addMessage('Oi, como posso te ajudar senhor Marcelo?', 'assistant');
+            }
+        }
+        loadHistory();
     </script>
 </body>
 </html>

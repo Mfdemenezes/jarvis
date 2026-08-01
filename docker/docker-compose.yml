@@ -7,6 +7,7 @@ services:
       POSTGRES_DB: personal_kb
       POSTGRES_USER: assistant
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      TZ: America/Sao_Paulo
     volumes:
       - jarvis-db-data:/var/lib/postgresql/data
       - ./init-db.sql:/docker-entrypoint-initdb.d/init.sql
@@ -25,6 +26,7 @@ services:
     container_name: jarvis-app
     restart: always
     environment:
+      - TZ=America/Sao_Paulo
       - API_KEY=${API_KEY}
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
       - POSTGRES_HOST=jarvis-db
@@ -35,13 +37,20 @@ services:
       - OPENWEATHER_API_KEY=${OPENWEATHER_API_KEY}
       - NEWSAPI_KEY=${NEWSAPI_KEY}
       - GOOGLE_MAPS_KEY=${GOOGLE_MAPS_KEY}
+      - GOOGLE_SEARCH_CX=${GOOGLE_SEARCH_CX}
       - EVO_URL=${EVO_URL}
       - EVO_KEY=${EVO_KEY}
       - EVO_INSTANCE=${EVO_INSTANCE}
+      - EVO_PERSONAL_INSTANCE=${EVO_PERSONAL_INSTANCE}
+      - EVO_PERSONAL_KEY=${EVO_PERSONAL_KEY}
       - VAPID_PUBLIC=${VAPID_PUBLIC}
       - VAPID_PRIVATE=${VAPID_PRIVATE}
       - LOGIN_USER=${LOGIN_USER}
       - LOGIN_PASS=${LOGIN_PASS}
+      - BRAPI_TOKEN=${BRAPI_TOKEN}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - GROQ_API_KEY=${GROQ_API_KEY}
+      - WHATSAPP_WEBHOOK_SECRET=${WHATSAPP_WEBHOOK_SECRET}
     ports:
       - "127.0.0.1:8100:8000"
     depends_on:
