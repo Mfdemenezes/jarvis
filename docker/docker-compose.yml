@@ -4,8 +4,8 @@ services:
     container_name: jarvis-db
     restart: always
     environment:
-      POSTGRES_DB: personal_kb
-      POSTGRES_USER: assistant
+      POSTGRES_DB: ${POSTGRES_DB:-personal_kb}
+      POSTGRES_USER: ${POSTGRES_USER:-assistant}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       TZ: America/Sao_Paulo
     volumes:
@@ -51,6 +51,18 @@ services:
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
       - GROQ_API_KEY=${GROQ_API_KEY}
       - WHATSAPP_WEBHOOK_SECRET=${WHATSAPP_WEBHOOK_SECRET}
+      - GOOGLE_SHEET_ID=${GOOGLE_SHEET_ID}
+      - WHATSAPP_GROUP_ID=${WHATSAPP_GROUP_ID}
+      - HOME_ADDRESS=${HOME_ADDRESS}
+      - GMAIL_REDIRECT_URI=${GMAIL_REDIRECT_URI}
+      - VAPID_EMAIL=${VAPID_EMAIL}
+      - APP_DOMAIN=${APP_DOMAIN}
+      - POSTGRES_DB=${POSTGRES_DB:-personal_kb}
+      - POSTGRES_USER=${POSTGRES_USER:-assistant}
+      - DEFAULT_CITY=${DEFAULT_CITY:-Miguel Pereira}
+      - CONTATOS_ZAP_AMOR=${CONTATOS_ZAP_AMOR}
+      - CONTATOS_ZAP_MARCELO=${CONTATOS_ZAP_MARCELO}
+      - CONTATOS_ZAP_MEL=${CONTATOS_ZAP_MEL}
     ports:
       - "127.0.0.1:8100:8000"
     depends_on:

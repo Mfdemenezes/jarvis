@@ -42,7 +42,7 @@ NEWSAPI_KEY = os.getenv("NEWSAPI_KEY")
 GOOGLE_MAPS_KEY = os.getenv("GOOGLE_MAPS_KEY", "")
 GOOGLE_SEARCH_KEY = os.getenv("GOOGLE_SEARCH_KEY", GOOGLE_MAPS_KEY)
 GOOGLE_SEARCH_CX = os.getenv("GOOGLE_SEARCH_CX", "")
-SHEET_ID = "1RjwiT3F-ubct12QHGyFu-YisARrAVQJzKCTM7VA__gU"
+SHEET_ID = os.getenv("GOOGLE_SHEET_ID", "1RjwiT3F-ubct12QHGyFu-YisARrAVQJzKCTM7VA__gU")
 EVO_URL = os.getenv("EVO_URL", "")
 EVO_KEY = os.getenv("EVO_KEY", "")
 EVO_INSTANCE = os.getenv("EVO_INSTANCE", "")
@@ -52,17 +52,18 @@ EVO_INSTANCE = os.getenv("EVO_INSTANCE", "")
 from urllib.parse import quote as _urlquote
 EVO_PERSONAL_INSTANCE = _urlquote(os.getenv("EVO_PERSONAL_INSTANCE", "")) or EVO_INSTANCE
 EVO_PERSONAL_KEY = os.getenv("EVO_PERSONAL_KEY", "") or EVO_KEY
-MARCELO_WHATSAPP = "120363426093960169@g.us"
+MARCELO_WHATSAPP = os.getenv("WHATSAPP_GROUP_ID", "120363426093960169@g.us")
 WHATSAPP_WEBHOOK_SECRET = os.getenv("WHATSAPP_WEBHOOK_SECRET", "")
 VAPID_PUBLIC = os.getenv("VAPID_PUBLIC", "")
 VAPID_PRIVATE = os.getenv("VAPID_PRIVATE", "")
 push_subscriptions = []
-LOCAIS = {"casa": "Rua de Paiva 124, Miguel Pereira, RJ", "minha casa": "Rua de Paiva 124, Miguel Pereira, RJ"}
+_home_addr = os.getenv("HOME_ADDRESS", "Rua de Paiva 124, Miguel Pereira, RJ")
+LOCAIS = {"casa": _home_addr, "minha casa": _home_addr}
 REDIS_HOST = os.getenv("REDIS_HOST", "jarvis-cache")
 
 GMAIL_CLIENT_ID = os.getenv("GMAIL_CLIENT_ID")
 GMAIL_CLIENT_SECRET = os.getenv("GMAIL_CLIENT_SECRET")
-GMAIL_REDIRECT_URI = "https://jarvis.mbam.com.br/auth/callback"
+GMAIL_REDIRECT_URI = os.getenv("GMAIL_REDIRECT_URI", "https://jarvis.mbam.com.br/auth/callback")
 GMAIL_SCOPES = ["https://www.googleapis.com/auth/gmail.readonly", "https://www.googleapis.com/auth/gmail.compose", "https://www.googleapis.com/auth/calendar.events", "https://www.googleapis.com/auth/calendar.readonly", "https://www.googleapis.com/auth/spreadsheets"]
 gmail_credentials = None
 
@@ -77,7 +78,7 @@ Suas capacidades reais incluem:
 3. COMUNICAÇÃO: Você envia mensagens de WhatsApp, lê e redige E-mails (Gmail) e gerencia a Agenda (Google Calendar).
 4. UTILIDADES: Você fornece previsão do tempo real, cotação de moedas/cripto e trânsito (Google Maps).
 
-O Marcelo mora em Miguel Pereira, RJ (Rua de Paiva 124). Quando ele falar 'casa', é lá.
+O Marcelo mora em {home_address}. Quando ele falar 'casa', é lá.
 Hoje é {today}. Quando tiver dados reais no contexto, use-os na resposta.
 Nunca diga que não pode fazer algo sem tentar usar suas ferramentas primeiro.
 
@@ -120,8 +121,8 @@ class ChatResponse(BaseModel):
 def get_db():
     return psycopg2.connect(
         host=POSTGRES_HOST,
-        database="personal_kb",
-        user="assistant",
+        database=os.getenv("POSTGRES_DB", "personal_kb"),
+        user=os.getenv("POSTGRES_USER", "assistant"),
         password=POSTGRES_PASSWORD,
         port=5432
     )
@@ -346,7 +347,7 @@ async def _try_groq(prompt: str, system: str, context: str, complex_query: bool,
 
 async def call_ollama(prompt: str, context: str = "", force_quality: bool = False, instructions: str = ""):
     today = datetime.now().strftime("%Y-%m-%d %H:%M")
-    system = SYSTEM_PROMPT.format(today=today)
+    system = SYSTEM_PROMPT.format(today=today, home_address=os.getenv("HOME_ADDRESS", "Rua de Paiva 124, Miguel Pereira, RJ"))
     if instructions:
         # Instrucoes de acao (JSON de whatsapp/evento/lembrete/planilha) vao no
         # system prompt, nao no bloco de Contexto — instrucoes coladas junto com
@@ -481,7 +482,7 @@ async def send_push(title: str, body: str):
             import json
             webpush(sub, json.dumps({"title": title, "body": body}),
                     vapid_private_key=VAPID_PRIVATE,
-                    vapid_claims={"sub": "mailto:mfdemenezes@gmail.com"})
+                    vapid_claims={"sub": f"mailto:{os.getenv('VAPID_EMAIL', 'mfdemenezes@gmail.com')}"})
         except:
             push_subscriptions.remove(sub)
 
@@ -867,7 +868,7 @@ async def fetch_module_data(modulo: dict) -> str:
 
         # ── Clima ─────────────────────────────────────────────────────────
         if tipo == "clima":
-            cidade = param or "Miguel Pereira"
+            cidade = param or os.getenv("DEFAULT_CITY", "Miguel Pereira")
             async with httpx.AsyncClient(timeout=10.0) as c:
                 r = await c.get(
                     f"https://api.openweathermap.org/data/2.5/weather"
@@ -1269,7 +1270,11 @@ async def health():
 # sim/não continua determinística, no início do /chat.
 # ══════════════════════════════════════════════════════════════════════════
 
-CONTATOS_ZAP = {"amor": "5524998826028", "marcelo": "5521960192189", "mel": "5521980078829"}
+CONTATOS_ZAP = {
+    "amor":    os.getenv("CONTATOS_ZAP_AMOR",    "5524998826028"),
+    "marcelo": os.getenv("CONTATOS_ZAP_MARCELO", "5521960192189"),
+    "mel":     os.getenv("CONTATOS_ZAP_MEL",     "5521980078829"),
+}
 
 TOOLS = [
     {"name": "buscar_google", "description": "Busca no Google fatos atuais, preços, pessoas, lugares e informações gerais.",
@@ -1366,7 +1371,7 @@ async def execute_tool(name: str, args: dict, user_id: str) -> str:
         return await search_google(args.get("consulta", ""))
 
     if name == "clima":
-        city = args.get("cidade") or "Miguel Pereira"
+        city = args.get("cidade") or os.getenv("DEFAULT_CITY", "Miguel Pereira")
         async with httpx.AsyncClient(timeout=15.0) as wc:
             wr = await wc.get(f"https://api.openweathermap.org/data/2.5/weather?q={city}&appid={OPENWEATHER_KEY}&units=metric&lang=pt_br")
             wd = wr.json()
@@ -1606,7 +1611,7 @@ async def execute_tool(name: str, args: dict, user_id: str) -> str:
 async def run_agent(user_message: str, context: str, user_id: str) -> str:
     """Loop do agente: Claude decide quais ferramentas chamar até ter a resposta."""
     today = datetime.now().strftime("%Y-%m-%d %H:%M")
-    system = SYSTEM_PROMPT.format(today=today) + TOOLS_GUIDE + "\n\nContexto:\n" + context
+    system = SYSTEM_PROMPT.format(today=today, home_address=os.getenv("HOME_ADDRESS", "Rua de Paiva 124, Miguel Pereira, RJ")) + TOOLS_GUIDE + "\n\nContexto:\n" + context
     model = "claude-sonnet-5" if is_complex_query(user_message) else "claude-haiku-4-5"
     messages = [{"role": "user", "content": user_message}]
     async with httpx.AsyncClient(timeout=45.0) as client:
@@ -2217,7 +2222,7 @@ async def status_panel():
     <thead><tr><th>Serviço</th><th>Status</th><th>Detalhe</th></tr></thead>
     <tbody>{rows}</tbody>
   </table>
-  <div class="footer">jarvis.mbam.com.br</div>
+  <div class="footer">" + os.getenv("APP_DOMAIN", "jarvis.mbam.com.br") + "</div>
 </body>
 </html>"""
     return HTMLResponse(content=html)
