@@ -1270,11 +1270,7 @@ async def health():
 # sim/não continua determinística, no início do /chat.
 # ══════════════════════════════════════════════════════════════════════════
 
-CONTATOS_ZAP = {
-    "amor":    os.getenv("CONTATOS_ZAP_AMOR",    "5524998826028"),
-    "marcelo": os.getenv("CONTATOS_ZAP_MARCELO", "5521960192189"),
-    "mel":     os.getenv("CONTATOS_ZAP_MEL",     "5521980078829"),
-}
+# Contatos resolvidos dinamicamente via find_contact() / Evolution API
 
 TOOLS = [
     {"name": "buscar_google", "description": "Busca no Google fatos atuais, preços, pessoas, lugares e informações gerais.",
@@ -1345,9 +1341,6 @@ async def _resolve_whatsapp_number(destinatario: str):
     if 10 <= len(digits) <= 15 and len(digits) >= len(d) - 6:
         number = digits if len(digits) >= 12 else "55" + digits
         return number, "+" + number
-    number = CONTATOS_ZAP.get(d.lower(), "")
-    if number:
-        return number, d
     hit = find_contact(d)
     if hit:
         return hit["number"], hit["name"]

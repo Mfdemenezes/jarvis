@@ -60,9 +60,6 @@ services:
       - POSTGRES_DB=${POSTGRES_DB:-personal_kb}
       - POSTGRES_USER=${POSTGRES_USER:-assistant}
       - DEFAULT_CITY=${DEFAULT_CITY:-Miguel Pereira}
-      - CONTATOS_ZAP_AMOR=${CONTATOS_ZAP_AMOR}
-      - CONTATOS_ZAP_MARCELO=${CONTATOS_ZAP_MARCELO}
-      - CONTATOS_ZAP_MEL=${CONTATOS_ZAP_MEL}
     ports:
       - "127.0.0.1:8100:8000"
     depends_on:
