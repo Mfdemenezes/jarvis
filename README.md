@@ -53,6 +53,7 @@ antes de responder.
 | gerenciar_modulo  | Adiciona/remove/ativa/pausa módulos do relatório matinal    |
 | analisar_movimento| Movimento de ETF/ação é anormal? (z-score por hora)         |
 | niveis_tecnicos   | Perfil de volume (POC/área de valor), pivots, fundos e topos |
+| definir_endereco_casa | Troca o endereço residencial na hora, sem restart        |
 
 ### Confirmação de ações (determinística)
 
@@ -133,7 +134,7 @@ SELECT id, tipo, parametro, label, ativo FROM morning_modules ORDER BY ordem;
 | reminders            | Lembretes com data/hora                          |
 | morning_modules      | Módulos configuráveis do relatório matinal       |
 | whatsapp_contacts    | Contatos sincronizados da Evolution API          |
-| kv_store             | Chave-valor (tokens Google, flags de envio)      |
+| kv_store             | Chave-valor (tokens Google, flags, `home_address`) |
 
 ## Segurança
 
@@ -195,7 +196,8 @@ WHATSAPP_GROUP_ID=          WHATSAPP_WEBHOOK_SECRET=
 OPENWEATHER_API_KEY=        NEWSAPI_KEY=              BRAPI_TOKEN=
 
 # Configurações pessoais
-HOME_ADDRESS=               DEFAULT_CITY=             APP_DOMAIN=
+HOME_ADDRESS=               # semente do 1o boot — depois a verdade fica no kv_store
+DEFAULT_CITY=               APP_DOMAIN=
 VAPID_PUBLIC=               VAPID_PRIVATE=            VAPID_EMAIL=
 USER_NAME=                  ASSISTANT_NAME=           # identidade (USER_NAME obrigatória)
 

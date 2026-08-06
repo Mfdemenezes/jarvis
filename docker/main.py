@@ -82,10 +82,56 @@ WHATSAPP_WEBHOOK_SECRET = os.getenv("WHATSAPP_WEBHOOK_SECRET", "")
 VAPID_PUBLIC = os.getenv("VAPID_PUBLIC", "")
 VAPID_PRIVATE = os.getenv("VAPID_PRIVATE", "")
 push_subscriptions = []
-HOME_ADDRESS = _env_obrig("HOME_ADDRESS")
+# Endereco de casa: fonte unica no kv_store, editavel por chat sem restart.
+# O env e apenas SEMENTE do primeiro boot — nao e a verdade.
+HOME_ADDRESS_SEED = (os.getenv("HOME_ADDRESS") or "").strip()
 DEFAULT_CITY = _env_obrig("DEFAULT_CITY")
-_home_addr = HOME_ADDRESS
-LOCAIS = {"casa": _home_addr, "minha casa": _home_addr}
+
+
+def _home_address() -> str:
+    """Endereco atual de casa. kv_store manda; o env so vale se o banco esta vazio."""
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute("SELECT value FROM kv_store WHERE key = 'home_address'")
+        row = cur.fetchone()
+        cur.close()
+        conn.close()
+        if row and (row[0] or "").strip():
+            return row[0].strip()
+    except Exception as e:
+        logger.error(f"HOME_ADDR_READ_ERROR error={e}")
+    return HOME_ADDRESS_SEED
+
+
+def _home_address_no_banco() -> bool:
+    """Se o kv_store ja tem endereco, o env nao deve sobrescrever."""
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("SELECT value FROM kv_store WHERE key = 'home_address'")
+    row = cur.fetchone()
+    cur.close()
+    conn.close()
+    return bool(row and (row[0] or "").strip())
+
+
+def _set_home_address(endereco: str):
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("""
+        INSERT INTO kv_store (key, value, updated_at) VALUES ('home_address', %s, NOW())
+        ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()
+    """, (endereco.strip(),))
+    conn.commit()
+    cur.close()
+    conn.close()
+
+
+def _locais() -> dict:
+    """Aliases resolvidos na hora da chamada — nao no import, senao 'mudei de
+    casa' pelo chat so valeria depois de reiniciar o container."""
+    a = _home_address()
+    return {"casa": a, "minha casa": a} if a else {}
 REDIS_HOST = os.getenv("REDIS_HOST", "jarvis-cache")
 
 GMAIL_CLIENT_ID = os.getenv("GMAIL_CLIENT_ID")
@@ -106,7 +152,9 @@ Suas capacidades reais incluem:
 3. COMUNICAÇÃO: Você envia mensagens de WhatsApp, lê e redige E-mails (Gmail) e gerencia a Agenda (Google Calendar).
 4. UTILIDADES: Você fornece previsão do tempo real, cotação de moedas/cripto e trânsito (Google Maps).
 
-{user_name} mora em {home_address}. Quando ele falar 'casa', é lá.
+Quando {user_name} falar 'casa' ou 'minha casa', trate como o endereço residencial dele.
+O endereço vem das memórias no contexto e das ferramentas — não invente nem use endereço de memória antiga
+se houver uma mais recente. Se ele disser que mudou de casa, chame definir_endereco_casa.
 Hoje é {today}. Quando tiver dados reais no contexto, use-os na resposta.
 Nunca diga que não pode fazer algo sem tentar usar suas ferramentas primeiro.
 
@@ -375,7 +423,7 @@ async def _try_groq(prompt: str, system: str, context: str, complex_query: bool,
 
 async def call_ollama(prompt: str, context: str = "", force_quality: bool = False, instructions: str = ""):
     today = datetime.now().strftime("%Y-%m-%d %H:%M")
-    system = SYSTEM_PROMPT.format(today=today, home_address=HOME_ADDRESS, user_name=USER_NAME, assistant_name=ASSISTANT_NAME)
+    system = SYSTEM_PROMPT.format(today=today, user_name=USER_NAME, assistant_name=ASSISTANT_NAME)
     if instructions:
         # Instrucoes de acao (JSON de whatsapp/evento/lembrete/planilha) vao no
         # system prompt, nao no bloco de Contexto — instrucoes coladas junto com
@@ -1321,6 +1369,13 @@ async def check_vol_alerts_loop():
 
 @app.on_event("startup")
 async def start_email_cron():
+    # Primeira subida: leva o endereco do env para o banco, que passa a ser a fonte
+    try:
+        if HOME_ADDRESS_SEED and not _home_address_no_banco():
+            _set_home_address(HOME_ADDRESS_SEED)
+            logger.info("HOME_ADDR_SEEDED do .env para o kv_store")
+    except Exception as e:
+        logger.error(f"HOME_ADDR_SEED_ERROR error={e}")
     vol.configurar(redis_client if REDIS_AVAILABLE else None, get_db, logger)
     niveis.configurar(redis_client if REDIS_AVAILABLE else None, logger)
     asyncio.create_task(check_vol_alerts_loop())
@@ -1375,6 +1430,8 @@ async def health():
 # Contatos resolvidos dinamicamente via find_contact() / Evolution API
 
 TOOLS = [
+    {"name": "definir_endereco_casa", "description": "Atualiza o endereço residencial do usuário. Use quando ele disser que mudou de casa, se mudou, ou quiser corrigir o endereço. Passa a valer na hora, sem reiniciar nada, e é o endereço usado como origem padrão nas rotas de trânsito.",
+     "input_schema": {"type": "object", "properties": {"endereco": {"type": "string", "description": "Endereço completo: rua, número, cidade, UF"}}, "required": ["endereco"]}},
     {"name": "niveis_tecnicos", "description": "Níveis de referência de preço de um ETF ou ação americana: perfil de volume (POC e área de valor), pivot points da sessão anterior, e fundos/topos recentes. Use quando perguntarem sobre suporte, resistência, região de preço, onde tem volume, topo, fundo ou pivot. É descritivo — NÃO prevê direção nem recomenda operação.",
      "input_schema": {"type": "object", "properties": {"ticker": {"type": "string", "description": "Ex: JEPQ, SPY, QQQ, AAPL"}}, "required": ["ticker"]}},
     {"name": "analisar_movimento", "description": "Diz se o movimento de preço de hoje de um ETF ou ação americana é anormal PARA AQUELE ATIVO, comparando com a volatilidade típica daquela hora da sessão. Use quando perguntarem se um ativo caiu/subiu muito, se o movimento é grande ou se deve se preocupar. NÃO prevê preço futuro nem dá recomendação de compra ou venda.",
@@ -1516,9 +1573,13 @@ async def execute_tool(name: str, args: dict, user_id: str) -> str:
             return "\n".join(heads) if heads else "Sem notícias encontradas."
 
     if name == "transito":
-        origem = args.get("origem") or LOCAIS["casa"]
+        _loc = _locais()
+        origem = args.get("origem") or _loc.get("casa", "")
         destino = args.get("destino", "")
-        for alias, addr in LOCAIS.items():
+        if not origem:
+            return ("Não sei o endereço de casa ainda. Me diz o endereço completo "
+                    "ou informe a origem da rota.")
+        for alias, addr in _loc.items():
             if alias in origem.lower():
                 origem = addr
             if alias in destino.lower():
@@ -1659,6 +1720,31 @@ async def execute_tool(name: str, args: dict, user_id: str) -> str:
             {"type": "whatsapp", "number": number, "text": mensagem, "contact": found_name}))
         return f'Rascunho registrado. Diga ao usuário: Vou enviar pra {found_name}: "{mensagem}" — Confirma? (sim/não)'
 
+    if name == "definir_endereco_casa":
+        end = (args.get("endereco") or "").strip()
+        if len(end) < 8:
+            return "Preciso do endereço completo: rua, número e cidade."
+        antigo = _home_address()
+        _set_home_address(end)
+        # Grava tambem como memoria para o contexto do modelo nao ficar defasado
+        texto = f"Moro em {end}"
+        emb = await get_embedding(texto)
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute("SELECT id FROM memory_embeddings WHERE content = %s", (texto,))
+        if not cur.fetchone():
+            cur.execute(
+                "INSERT INTO memory_embeddings (content, category, metadata, embedding) "
+                "VALUES (%s, 'endereco', %s, %s)",
+                (texto, json.dumps({"source": "definir_endereco_casa", "user_id": user_id,
+                                    "anterior": antigo}),
+                 _vector_literal(emb) if emb else None))
+            conn.commit()
+        cur.close()
+        conn.close()
+        logger.info(f"HOME_ADDR_SET de={antigo!r} para={end!r}")
+        return f"Endereço de casa atualizado para: {end}"
+
     if name == "salvar_memoria":
         conteudo = args.get("conteudo", "").strip()
         if not conteudo:
@@ -1725,7 +1811,7 @@ async def run_agent(user_message: str, context: str, user_id: str) -> str:
     """Loop do agente: Claude decide quais ferramentas chamar até ter a resposta."""
     _usou_tool.set(False)
     today = datetime.now().strftime("%Y-%m-%d %H:%M")
-    system = SYSTEM_PROMPT.format(today=today, home_address=HOME_ADDRESS, user_name=USER_NAME, assistant_name=ASSISTANT_NAME) + TOOLS_GUIDE + "\n\nContexto:\n" + context
+    system = SYSTEM_PROMPT.format(today=today, user_name=USER_NAME, assistant_name=ASSISTANT_NAME) + TOOLS_GUIDE + "\n\nContexto:\n" + context
     model = "claude-sonnet-5" if is_complex_query(user_message) else "claude-haiku-4-5"
     messages = [{"role": "user", "content": user_message}]
     async with httpx.AsyncClient(timeout=45.0) as client:
