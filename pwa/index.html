@@ -270,7 +270,8 @@
     <script>
         // Configuração
         const API_URL = '/chat';  // Alterar para seu domínio
-        const API_KEY = 'b6829dad41c9df6f434f49017032fc47abb717e680975ada261274fc8447c424';  // Alterar para sua API Key
+        // Chave NAO fica no frontend: o nginx injeta o header X-Api-Key no proxy.
+        const API_KEY = '';
         
         // Elementos
         const chat = document.getElementById('chat');
@@ -544,10 +545,10 @@
                         if (item.assistant) addMessage(item.assistant, 'assistant');
                     });
                 } else {
-                    addMessage('Oi, como posso te ajudar senhor Marcelo?', 'assistant');
+                    addMessage('Oi, como posso te ajudar?', 'assistant');
                 }
             } catch(e) {
-                addMessage('Oi, como posso te ajudar senhor Marcelo?', 'assistant');
+                addMessage('Oi, como posso te ajudar?', 'assistant');
             }
         }
         loadHistory();

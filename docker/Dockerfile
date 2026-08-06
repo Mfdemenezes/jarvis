@@ -12,7 +12,8 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY main.py .
-COPY app/ ./app/
+COPY vol.py .
+COPY niveis.py .
 
 RUN useradd -m -u 1000 jarvis && chown -R jarvis:jarvis /app
 USER jarvis

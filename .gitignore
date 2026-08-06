@@ -47,3 +47,12 @@ docker-compose.override.yml
 *.tfstate
 *.tfstate.*
 .terraform/
+
+# Backups de env e de arquivos (nunca versionar)
+.env*
+!.env.example
+*.bak
+*.bak.*
+
+# Chave injetada no nginx
+docker/nginx-apikey.conf

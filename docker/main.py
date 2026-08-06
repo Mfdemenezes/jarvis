@@ -22,6 +22,14 @@ from datetime import datetime, timedelta
 import json
 from typing import Optional
 import redis
+import vol
+import niveis
+import contextvars
+
+# Respostas produzidas com ferramenta dependem de dado ao vivo e nunca podem
+# ser cacheadas: um preco de uma hora atras servido como atual e pior que
+# nenhuma resposta. ContextVar em vez de global por causa da concorrencia.
+_usou_tool = contextvars.ContextVar("usou_tool", default=False)
 from google_auth_oauthlib.flow import Flow
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
@@ -42,32 +50,52 @@ NEWSAPI_KEY = os.getenv("NEWSAPI_KEY")
 GOOGLE_MAPS_KEY = os.getenv("GOOGLE_MAPS_KEY", "")
 GOOGLE_SEARCH_KEY = os.getenv("GOOGLE_SEARCH_KEY", GOOGLE_MAPS_KEY)
 GOOGLE_SEARCH_CX = os.getenv("GOOGLE_SEARCH_CX", "")
-SHEET_ID = os.getenv("GOOGLE_SHEET_ID", "1RjwiT3F-ubct12QHGyFu-YisARrAVQJzKCTM7VA__gU")
+def _env_obrig(nome: str) -> str:
+    """Env var sem fallback: dado pessoal nunca fica no fonte.
+
+    Falha no boot em vez de rodar com o dado de outra pessoa — um endereco ou
+    ID de grupo errado silenciosamente e pior que nao subir.
+    """
+    v = (os.getenv(nome) or "").strip()
+    if not v:
+        raise RuntimeError(f"Variavel de ambiente obrigatoria ausente: {nome}")
+    return v
+
+
+# Identidade (por usuario — nada de nome no fonte)
+USER_NAME = _env_obrig("USER_NAME")
+ASSISTANT_NAME = os.getenv("ASSISTANT_NAME", "Jarvis").strip() or "Jarvis"
+
+SHEET_ID = _env_obrig("GOOGLE_SHEET_ID")
 EVO_URL = os.getenv("EVO_URL", "")
 EVO_KEY = os.getenv("EVO_KEY", "")
 EVO_INSTANCE = os.getenv("EVO_INSTANCE", "")
-# Instancia pessoal (numero do proprio Marcelo): usada para enviar mensagens a
+# Instancia pessoal (numero do proprio usuario): usada para enviar mensagens a
 # contatos em nome dele. As respostas do Jarvis no grupo continuam saindo pela
 # instancia do bot (EVO_INSTANCE). Sem configuracao, cai no comportamento antigo.
 from urllib.parse import quote as _urlquote
 EVO_PERSONAL_INSTANCE = _urlquote(os.getenv("EVO_PERSONAL_INSTANCE", "")) or EVO_INSTANCE
 EVO_PERSONAL_KEY = os.getenv("EVO_PERSONAL_KEY", "") or EVO_KEY
-MARCELO_WHATSAPP = os.getenv("WHATSAPP_GROUP_ID", "120363426093960169@g.us")
+WHATSAPP_GROUP = _env_obrig("WHATSAPP_GROUP_ID")
+MARCELO_WHATSAPP = WHATSAPP_GROUP  # alias retrocompativel
 WHATSAPP_WEBHOOK_SECRET = os.getenv("WHATSAPP_WEBHOOK_SECRET", "")
 VAPID_PUBLIC = os.getenv("VAPID_PUBLIC", "")
 VAPID_PRIVATE = os.getenv("VAPID_PRIVATE", "")
 push_subscriptions = []
-_home_addr = os.getenv("HOME_ADDRESS", "Rua de Paiva 124, Miguel Pereira, RJ")
+HOME_ADDRESS = _env_obrig("HOME_ADDRESS")
+DEFAULT_CITY = _env_obrig("DEFAULT_CITY")
+_home_addr = HOME_ADDRESS
 LOCAIS = {"casa": _home_addr, "minha casa": _home_addr}
 REDIS_HOST = os.getenv("REDIS_HOST", "jarvis-cache")
 
 GMAIL_CLIENT_ID = os.getenv("GMAIL_CLIENT_ID")
 GMAIL_CLIENT_SECRET = os.getenv("GMAIL_CLIENT_SECRET")
-GMAIL_REDIRECT_URI = os.getenv("GMAIL_REDIRECT_URI", "https://jarvis.mbam.com.br/auth/callback")
+GMAIL_REDIRECT_URI = _env_obrig("GMAIL_REDIRECT_URI")
+APP_DOMAIN = _env_obrig("APP_DOMAIN")
 GMAIL_SCOPES = ["https://www.googleapis.com/auth/gmail.readonly", "https://www.googleapis.com/auth/gmail.compose", "https://www.googleapis.com/auth/calendar.events", "https://www.googleapis.com/auth/calendar.readonly", "https://www.googleapis.com/auth/spreadsheets"]
 gmail_credentials = None
 
-SYSTEM_PROMPT = """Você é o Jarvis, assistente pessoal de elite do Marcelo Menezes.
+SYSTEM_PROMPT = """Você é o {assistant_name}, assistente pessoal de elite de {user_name}.
 Você é proativo, inteligente e informal, agindo como um braço direito.
 Suas respostas devem ser curtas, diretas e entregues EXCLUSIVAMENTE via texto no chat.
 Não mencione comandos de voz ou capacidade de falar.
@@ -78,7 +106,7 @@ Suas capacidades reais incluem:
 3. COMUNICAÇÃO: Você envia mensagens de WhatsApp, lê e redige E-mails (Gmail) e gerencia a Agenda (Google Calendar).
 4. UTILIDADES: Você fornece previsão do tempo real, cotação de moedas/cripto e trânsito (Google Maps).
 
-O Marcelo mora em {home_address}. Quando ele falar 'casa', é lá.
+{user_name} mora em {home_address}. Quando ele falar 'casa', é lá.
 Hoje é {today}. Quando tiver dados reais no contexto, use-os na resposta.
 Nunca diga que não pode fazer algo sem tentar usar suas ferramentas primeiro.
 
@@ -347,7 +375,7 @@ async def _try_groq(prompt: str, system: str, context: str, complex_query: bool,
 
 async def call_ollama(prompt: str, context: str = "", force_quality: bool = False, instructions: str = ""):
     today = datetime.now().strftime("%Y-%m-%d %H:%M")
-    system = SYSTEM_PROMPT.format(today=today, home_address=os.getenv("HOME_ADDRESS", "Rua de Paiva 124, Miguel Pereira, RJ"))
+    system = SYSTEM_PROMPT.format(today=today, home_address=HOME_ADDRESS, user_name=USER_NAME, assistant_name=ASSISTANT_NAME)
     if instructions:
         # Instrucoes de acao (JSON de whatsapp/evento/lembrete/planilha) vao no
         # system prompt, nao no bloco de Contexto — instrucoes coladas junto com
@@ -482,7 +510,7 @@ async def send_push(title: str, body: str):
             import json
             webpush(sub, json.dumps({"title": title, "body": body}),
                     vapid_private_key=VAPID_PRIVATE,
-                    vapid_claims={"sub": f"mailto:{os.getenv('VAPID_EMAIL', 'mfdemenezes@gmail.com')}"})
+                    vapid_claims={"sub": f"mailto:{os.getenv('VAPID_EMAIL') or _env_obrig('VAPID_EMAIL')}"})
         except:
             push_subscriptions.remove(sub)
 
@@ -868,7 +896,7 @@ async def fetch_module_data(modulo: dict) -> str:
 
         # ── Clima ─────────────────────────────────────────────────────────
         if tipo == "clima":
-            cidade = param or os.getenv("DEFAULT_CITY", "Miguel Pereira")
+            cidade = param or DEFAULT_CITY
             async with httpx.AsyncClient(timeout=10.0) as c:
                 r = await c.get(
                     f"https://api.openweathermap.org/data/2.5/weather"
@@ -918,6 +946,19 @@ async def fetch_module_data(modulo: dict) -> str:
                 for r in rems
             ])
 
+        # ── Movimento anormal normalizado pela vol da hora ─────────────────
+        if tipo == "niveis":
+            _r = await niveis.analisar(param)
+            if not _r:
+                return f"{param.upper()}: níveis indisponíveis"
+            return niveis.formatar_modulo(_r)
+
+        if tipo == "vol":
+            _r = await vol.analisar(param)
+            if not _r:
+                return f"{param.upper()}: análise de volatilidade indisponível"
+            return vol.formatar_modulo(_r)
+
         # ── ETF / Ação americana via Yahoo Finance ─────────────────────────
         if tipo in ("etf", "acao_us"):
             ticker = param.upper()
@@ -929,9 +970,14 @@ async def fetch_module_data(modulo: dict) -> str:
                 )
                 if r.status_code == 200:
                     d = r.json()
-                    meta = d.get("chart", {}).get("result", [{}])[0].get("meta", {})
+                    res0 = (d.get("chart", {}).get("result") or [{}])[0]
+                    meta = res0.get("meta", {})
                     price = meta.get("regularMarketPrice", 0)
-                    prev  = meta.get("chartPreviousClose", price)
+                    # chartPreviousClose com range=5d devolve o fechamento de 6
+                    # sessoes atras, nao o de ontem: usar o penultimo bar diario.
+                    _q = (res0.get("indicators", {}).get("quote") or [{}])[0]
+                    _cl = [c for c in (_q.get("close") or []) if c]
+                    prev = _cl[-2] if len(_cl) >= 2 else meta.get("chartPreviousClose", price)
                     chg   = ((price - prev) / prev * 100) if prev else 0
                     currency = meta.get("currency", "USD")
                     name = meta.get("longName") or meta.get("shortName") or ticker
@@ -1031,7 +1077,8 @@ async def handle_module_command(text: str) -> Optional[str]:
             # Determinar fonte e label padrão
             fonte_map = {"moedas": "openexchange", "cripto": "coingecko", "clima": "openweather",
                          "noticias": "newsapi", "agenda": "google_calendar", "lembretes": "interno",
-                         "etf": "yahoo", "acao_us": "yahoo", "acao_br": "brapi", "alerta": "interno"}
+                         "etf": "yahoo", "acao_us": "yahoo", "acao_br": "brapi", "alerta": "interno",
+                         "vol": "yahoo", "niveis": "yahoo"}
             fonte = fonte_map.get(tipo_novo, "externo")
             label_novo = f"{param_novo.upper() if param_novo else tipo_novo.capitalize()}"
 
@@ -1132,7 +1179,7 @@ async def generate_morning_report() -> Optional[str]:
 
     dados_str = "\n".join(blocos) if blocos else "Nenhum dado disponivel no momento."
 
-    prompt = f"""Elabore o resumo matinal para o Marcelo Menezes.
+    prompt = f"""Elabore o resumo matinal para {USER_NAME}.
 Seja conciso, informal e direto. Use emojis elegantes. Organize as informacoes de forma fluida.
 
 Dados reais coletados para hoje:
@@ -1182,7 +1229,7 @@ async def generate_evening_preview() -> Optional[str]:
     if not cal_events_str:
         return None
 
-    prompt = f"""Elabore um aviso curto para o Marcelo sobre os compromissos de amanha ({tomorrow.strftime('%d/%m')}).
+    prompt = f"""Elabore um aviso curto para {USER_NAME} sobre os compromissos de amanha ({tomorrow.strftime('%d/%m')}).
 Seja conciso e direto, formato WhatsApp, com emojis leves.
 
 Compromissos de amanha (Google Calendar):
@@ -1220,8 +1267,63 @@ async def check_and_send_evening_preview_loop():
         except Exception as e:
             logger.error(f"Erro no loop do aviso de compromissos de amanha: {e}")
 
+def _tickers_monitorados() -> list:
+    """Tickers dos módulos ativos de ETF / ação americana / vol."""
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT DISTINCT UPPER(parametro) FROM morning_modules
+            WHERE ativo AND tipo IN ('etf', 'acao_us', 'vol')
+              AND parametro IS NOT NULL AND parametro <> ''
+        """)
+        tickers = [r[0] for r in cur.fetchall()]
+        cur.close()
+        conn.close()
+        return tickers
+    except Exception as e:
+        logger.error(f"VOL_TICKERS_ERROR error={e}")
+        return []
+
+
+async def check_vol_alerts_loop():
+    """Avisa no WhatsApp quando um ativo monitorado tem movimento anormal.
+
+    Avalia uma vez por hora de sessão — cadência em que o backtest de 1 ano foi
+    medido (~2,8 alertas/mês no JEPQ). O poll de 5min só serve para pegar a
+    virada do bucket horário rápido, sem multiplicar falso positivo.
+    """
+    await asyncio.sleep(60)
+    avaliado = {}   # ticker -> (data_ref, idx) ja processado
+    while True:
+        try:
+            for ticker in _tickers_monitorados():
+                res = await vol.analisar(ticker)
+                if not res or res["estado"] != "aberto":
+                    continue
+                marca = (res["data_ref"], res["idx"])
+                if avaliado.get(ticker) == marca:
+                    continue
+                avaliado[ticker] = marca
+                if vol.deve_alertar(ticker, res["z"], res["data_ref"]):
+                    ctx = ""
+                    try:
+                        _nv = await niveis.analisar(ticker)
+                        ctx = niveis.formatar_contexto(_nv) if _nv else ""
+                    except Exception as e:
+                        logger.error(f"VOL_NIVEIS_ERROR ticker={ticker} error={e}")
+                    await send_whatsapp(vol.formatar_alerta(res, ctx))
+                    logger.info(f"VOL_ALERT ticker={ticker} z={res['z']:.2f} pct={res['pct']:.2f}")
+        except Exception as e:
+            logger.error(f"VOL_LOOP_ERROR error={e}")
+        await asyncio.sleep(300)
+
+
 @app.on_event("startup")
 async def start_email_cron():
+    vol.configurar(redis_client if REDIS_AVAILABLE else None, get_db, logger)
+    niveis.configurar(redis_client if REDIS_AVAILABLE else None, logger)
+    asyncio.create_task(check_vol_alerts_loop())
     asyncio.create_task(check_important_emails())
     asyncio.create_task(check_reminders())
     asyncio.create_task(check_upcoming_events())
@@ -1273,16 +1375,20 @@ async def health():
 # Contatos resolvidos dinamicamente via find_contact() / Evolution API
 
 TOOLS = [
+    {"name": "niveis_tecnicos", "description": "Níveis de referência de preço de um ETF ou ação americana: perfil de volume (POC e área de valor), pivot points da sessão anterior, e fundos/topos recentes. Use quando perguntarem sobre suporte, resistência, região de preço, onde tem volume, topo, fundo ou pivot. É descritivo — NÃO prevê direção nem recomenda operação.",
+     "input_schema": {"type": "object", "properties": {"ticker": {"type": "string", "description": "Ex: JEPQ, SPY, QQQ, AAPL"}}, "required": ["ticker"]}},
+    {"name": "analisar_movimento", "description": "Diz se o movimento de preço de hoje de um ETF ou ação americana é anormal PARA AQUELE ATIVO, comparando com a volatilidade típica daquela hora da sessão. Use quando perguntarem se um ativo caiu/subiu muito, se o movimento é grande ou se deve se preocupar. NÃO prevê preço futuro nem dá recomendação de compra ou venda.",
+     "input_schema": {"type": "object", "properties": {"ticker": {"type": "string", "description": "Ex: JEPQ, SPY, QQQ, AAPL"}}, "required": ["ticker"]}},
     {"name": "buscar_google", "description": "Busca no Google fatos atuais, preços, pessoas, lugares e informações gerais.",
      "input_schema": {"type": "object", "properties": {"consulta": {"type": "string"}}, "required": ["consulta"]}},
     {"name": "clima", "description": "Previsão do tempo/temperatura atual de uma cidade brasileira.",
-     "input_schema": {"type": "object", "properties": {"cidade": {"type": "string", "description": "Padrão: Miguel Pereira"}}, "required": []}},
+     "input_schema": {"type": "object", "properties": {"cidade": {"type": "string", "description": f"Padrão: {DEFAULT_CITY}"}}, "required": []}},
     {"name": "cotacoes", "description": "Cotação atual de dólar e euro em reais; opcionalmente bitcoin.",
      "input_schema": {"type": "object", "properties": {"incluir_bitcoin": {"type": "boolean"}}, "required": []}},
     {"name": "noticias", "description": "Manchetes de notícias recentes do Brasil (ou de um tema).",
      "input_schema": {"type": "object", "properties": {"tema": {"type": "string", "description": "Padrão: brasil"}}, "required": []}},
     {"name": "transito", "description": "Rota de carro com trânsito atual: distância e tempo entre dois lugares.",
-     "input_schema": {"type": "object", "properties": {"origem": {"type": "string", "description": "Padrão: casa do Marcelo"}, "destino": {"type": "string"}}, "required": ["destino"]}},
+     "input_schema": {"type": "object", "properties": {"origem": {"type": "string", "description": "Padrão: a casa do usuário"}, "destino": {"type": "string"}}, "required": ["destino"]}},
     {"name": "ler_agenda", "description": "Lista os eventos do Google Calendar dos próximos dias (todas as agendas).",
      "input_schema": {"type": "object", "properties": {"dias": {"type": "integer", "description": "Padrão: 7"}}, "required": []}},
     {"name": "criar_evento", "description": "Registra um rascunho de evento no Google Calendar. O aplicativo pede confirmação ao usuário antes de criar de verdade.",
@@ -1297,7 +1403,7 @@ TOOLS = [
      "input_schema": {"type": "object", "properties": {"texto": {"type": "string"}, "quando": {"type": "string", "description": "YYYY-MM-DD HH:MM"}}, "required": ["texto", "quando"]}},
     {"name": "listar_lembretes", "description": "Lista os lembretes pendentes do usuário.",
      "input_schema": {"type": "object", "properties": {}, "required": []}},
-    {"name": "enviar_whatsapp", "description": "Registra um rascunho de mensagem de WhatsApp para um contato (por nome) ou número de telefone. O aplicativo mostra o rascunho e pede confirmação ao usuário antes de enviar de verdade, pelo número pessoal do Marcelo.",
+    {"name": "enviar_whatsapp", "description": "Registra um rascunho de mensagem de WhatsApp para um contato (por nome) ou número de telefone. O aplicativo mostra o rascunho e pede confirmação ao usuário antes de enviar de verdade, pelo número pessoal do usuário.",
      "input_schema": {"type": "object", "properties": {"destinatario": {"type": "string", "description": "Nome do contato como o usuário falou, ou número (+55...)"}, "mensagem": {"type": "string"}}, "required": ["destinatario", "mensagem"]}},
     {"name": "salvar_memoria", "description": "Guarda permanentemente um fato pessoal que o usuário pediu para lembrar.",
      "input_schema": {"type": "object", "properties": {"conteudo": {"type": "string"}, "categoria": {"type": "string", "description": "geral|saude|profissao|familia|financeiro|identidade|endereco"}}, "required": ["conteudo"]}},
@@ -1330,7 +1436,9 @@ Você tem ferramentas. Use-as sempre que precisar de dados reais ou de executar 
 As ferramentas enviar_whatsapp e criar_evento apenas registram um RASCUNHO: o aplicativo mostra o conteúdo ao usuário e pergunta "Confirma? (sim/não)" antes de executar de verdade. Depois de chamá-las, apenas repasse ao usuário o texto que a ferramenta retornar. Isso vale mesmo quando o usuário pedir para revisar antes — o rascunho É a revisão.
 
 REGRA CRÍTICA para gerenciar_modulo: quando o usuário pedir para TIRAR, REMOVER, PAUSAR, DESATIVAR, ou PARAR de incluir qualquer informação no resumo/relatório matinal (ex: "tira o bitcoin", "remove as notícias", "não quero mais ver o clima"), você DEVE chamar gerenciar_modulo(acao="off", ...) IMEDIATAMENTE — nunca gere o relatório matinal em resposta a esse tipo de pedido.
-Da mesma forma, quando pedir para ADICIONAR algo ao resumo de manhã, chame gerenciar_modulo(acao="add", ...) antes de qualquer outra coisa."""
+Da mesma forma, quando pedir para ADICIONAR algo ao resumo de manhã, chame gerenciar_modulo(acao="add", ...) antes de qualquer outra coisa.
+
+REGRA CRÍTICA para analisar_movimento e niveis_tecnicos: essas ferramentas são DESCRITIVAS. Reporte os números e o que eles medem, e pare aí. É proibido sugerir compra, venda, entrada, saída ou espera; chamar nível de "zona de compra", "fair value", "suporte sólido" ou "barato/caro"; e prever para onde o preço vai. Nenhuma dessas medidas tem poder preditivo de direção — pivot é aritmética da sessão anterior, perfil de volume é histograma do passado, e fundo/topo depende da janela escolhida. Se o usuário pedir recomendação de operação, diga com franqueza que esses dados não sustentam isso e explique o que eles de fato mostram."""
 
 
 async def _resolve_whatsapp_number(destinatario: str):
@@ -1360,11 +1468,23 @@ async def _resolve_whatsapp_number(destinatario: str):
 
 async def execute_tool(name: str, args: dict, user_id: str) -> str:
     """Executa uma ferramenta chamada pelo modelo e retorna o resultado como texto."""
+    if name == "niveis_tecnicos":
+        _r = await niveis.analisar(args.get("ticker", ""))
+        if not _r:
+            return "Não consegui calcular os níveis desse ticker."
+        return niveis.formatar_analise(_r)
+
+    if name == "analisar_movimento":
+        _r = await vol.analisar(args.get("ticker", ""))
+        if not _r:
+            return "Não consegui calcular a volatilidade desse ticker."
+        return vol.formatar_analise(_r)
+
     if name == "buscar_google":
         return await search_google(args.get("consulta", ""))
 
     if name == "clima":
-        city = args.get("cidade") or os.getenv("DEFAULT_CITY", "Miguel Pereira")
+        city = args.get("cidade") or DEFAULT_CITY
         async with httpx.AsyncClient(timeout=15.0) as wc:
             wr = await wc.get(f"https://api.openweathermap.org/data/2.5/weather?q={city}&appid={OPENWEATHER_KEY}&units=metric&lang=pt_br")
             wd = wr.json()
@@ -1603,8 +1723,9 @@ async def execute_tool(name: str, args: dict, user_id: str) -> str:
 
 async def run_agent(user_message: str, context: str, user_id: str) -> str:
     """Loop do agente: Claude decide quais ferramentas chamar até ter a resposta."""
+    _usou_tool.set(False)
     today = datetime.now().strftime("%Y-%m-%d %H:%M")
-    system = SYSTEM_PROMPT.format(today=today, home_address=os.getenv("HOME_ADDRESS", "Rua de Paiva 124, Miguel Pereira, RJ")) + TOOLS_GUIDE + "\n\nContexto:\n" + context
+    system = SYSTEM_PROMPT.format(today=today, home_address=HOME_ADDRESS, user_name=USER_NAME, assistant_name=ASSISTANT_NAME) + TOOLS_GUIDE + "\n\nContexto:\n" + context
     model = "claude-sonnet-5" if is_complex_query(user_message) else "claude-haiku-4-5"
     messages = [{"role": "user", "content": user_message}]
     async with httpx.AsyncClient(timeout=45.0) as client:
@@ -1619,6 +1740,7 @@ async def run_agent(user_message: str, context: str, user_id: str) -> str:
                 raise Exception(f"Anthropic: {data.get('error', {}).get('message', str(data))}")
             messages.append({"role": "assistant", "content": data["content"]})
             if data.get("stop_reason") == "tool_use":
+                _usou_tool.set(True)
                 results = []
                 for block in data["content"]:
                     if block.get("type") != "tool_use":
@@ -1668,7 +1790,7 @@ async def chat(
                 _ptype = _pending.get("type")
                 if _ptype == "whatsapp":
                     try:
-                        # Mensagem a contato sai pela instancia PESSOAL (numero do Marcelo)
+                        # Mensagem a contato sai pela instancia PESSOAL (numero do usuario)
                         async with httpx.AsyncClient(timeout=10.0) as wc:
                             _sr = await wc.post(f"{EVO_URL}/message/sendText/{EVO_PERSONAL_INSTANCE}",
                                 headers={"apikey": EVO_PERSONAL_KEY, "Content-Type": "application/json"},
@@ -1786,7 +1908,8 @@ async def chat(
 
         # ── 7. Persistir e cachear
         save_conversation(request.user_id, request.message, response)
-        cache_response(request.message, response)
+        if not _usou_tool.get():
+            cache_response(request.message, response)
         return ChatResponse(response=response, context_used=len(memories), cached=False)
 
     except Exception as e:
@@ -2129,7 +2252,7 @@ async def status_panel():
     try:
         async with httpx.AsyncClient(timeout=5.0) as c:
             r = await c.get(f"https://api.openweathermap.org/data/2.5/weather?q=Miguel+Pereira&appid={OPENWEATHER_KEY}&units=metric")
-            checks["OpenWeather"] = ("ok", f"{r.json().get('main',{}).get('temp','?')}°C em Miguel Pereira") if r.status_code == 200 else ("error", f"HTTP {r.status_code}")
+            checks["OpenWeather"] = ("ok", f"{r.json().get('main',{}).get('temp','?')}°C em {DEFAULT_CITY}") if r.status_code == 200 else ("error", f"HTTP {r.status_code}")
     except Exception as e:
         checks["OpenWeather"] = ("error", str(e)[:80])
     # Evolution WhatsApp
@@ -2215,7 +2338,7 @@ async def status_panel():
     <thead><tr><th>Serviço</th><th>Status</th><th>Detalhe</th></tr></thead>
     <tbody>{rows}</tbody>
   </table>
-  <div class="footer">" + os.getenv("APP_DOMAIN", "jarvis.mbam.com.br") + "</div>
+  <div class="footer">" + APP_DOMAIN + "</div>
 </body>
 </html>"""
     return HTMLResponse(content=html)

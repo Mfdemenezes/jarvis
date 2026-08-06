@@ -59,7 +59,16 @@ services:
       - APP_DOMAIN=${APP_DOMAIN}
       - POSTGRES_DB=${POSTGRES_DB:-personal_kb}
       - POSTGRES_USER=${POSTGRES_USER:-assistant}
-      - DEFAULT_CITY=${DEFAULT_CITY:-Miguel Pereira}
+      - DEFAULT_CITY=${DEFAULT_CITY}
+      - USER_NAME=${USER_NAME}
+      - ASSISTANT_NAME=${ASSISTANT_NAME:-Jarvis}
+      # Ajuste dos alertas sem rebuild da imagem
+      - VOL_LIMIAR_ALERTA=${VOL_LIMIAR_ALERTA:-2.0}
+      - VOL_PIORA_REALERTA=${VOL_PIORA_REALERTA:-1.0}
+      - NIVEIS_JANELA_SWING=${NIVEIS_JANELA_SWING:-3}
+      - NIVEIS_RETRACAO_MIN=${NIVEIS_RETRACAO_MIN:-1.5}
+      - NIVEIS_N_FAIXAS=${NIVEIS_N_FAIXAS:-40}
+      - NIVEIS_AREA_VALOR=${NIVEIS_AREA_VALOR:-0.70}
     ports:
       - "127.0.0.1:8100:8000"
     depends_on:
@@ -84,6 +93,7 @@ services:
     restart: always
     volumes:
       - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx-apikey.conf:/etc/nginx/apikey.conf:ro
       - ./.htpasswd:/etc/nginx/.htpasswd:ro
       - ../pwa:/usr/share/nginx/html/pwa:ro
     ports:

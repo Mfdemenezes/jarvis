@@ -51,6 +51,8 @@ antes de responder.
 | enviar_whatsapp   | Rascunho de mensagem → **exige confirmação sim/não**        |
 | salvar_memoria    | Grava fato pessoal permanente (embedding no pgvector)       |
 | gerenciar_modulo  | Adiciona/remove/ativa/pausa módulos do relatório matinal    |
+| analisar_movimento| Movimento de ETF/ação é anormal? (z-score por hora)         |
+| niveis_tecnicos   | Perfil de volume (POC/área de valor), pivots, fundos e topos |
 
 ### Confirmação de ações (determinística)
 
@@ -90,6 +92,8 @@ não quero mais ver notícias                → pausa módulo
 | acao_us    | Yahoo Finance  | AAPL, TSLA               |
 | acao_br    | BrAPI          | PETR4, VALE3             |
 | alerta     | interno        | texto livre              |
+| vol        | Yahoo Finance  | JEPQ, SPY (com z-score)  |
+| niveis     | Yahoo Finance  | JEPQ (POC + área valor)  |
 
 ### Módulos padrão (pré-configurados)
 
@@ -118,6 +122,7 @@ SELECT id, tipo, parametro, label, ativo FROM morning_modules ORDER BY ordem;
 | Alertas de e-mail       | a cada 5min | Keywords (boleto, fatura, pix...) → aviso no grupo|
 | Lembretes               | a cada 60s  | Dispara lembretes vencidos no WhatsApp            |
 | Sincronização contatos  | 1x por dia  | Evolution API → PostgreSQL (busca fuzzy por nome) |
+| Alerta de vol anormal   | 1x/h no pregão | Movimento ≥2σ de ativo monitorado → avisa no grupo |
 
 ## Banco de Dados — Tabelas
 
@@ -136,7 +141,8 @@ SELECT id, tipo, parametro, label, ativo FROM morning_modules ORDER BY ordem;
 - API protegida por `X-Api-Key`; webhook por `X-Webhook-Secret`
 - Portas Docker em 127.0.0.1 (não expostas); acesso externo apenas HTTPS (443)
 - Rate limiting: 5r/s API, 1r/s login; 3 conexões simultâneas por IP
-- Zero hardcoded: todas as configurações e dados pessoais em variáveis de ambiente
+- Dados pessoais e identidade só em variáveis de ambiente, **sem fallback no código** — `_env_obrig()` derruba o boot se faltar, em vez de rodar com o dado de outra pessoa
+- Chave de API **não fica no frontend**: o nginx injeta `X-Api-Key` no proxy (`docker/nginx-apikey.conf`, gitignored) — o navegador nunca a recebe
 - Confirmação de ações fora do alcance do LLM (código determinístico)
 - Headers: HSTS, X-Frame-Options DENY, CSP, nosniff
 
@@ -146,7 +152,8 @@ SELECT id, tipo, parametro, label, ativo FROM morning_modules ORDER BY ordem;
 jarvis/
 ├── docker/
 │   ├── main.py            # FastAPI + agente (TOOLS, execute_tool, run_agent)
-│   ├── app/               # config.py, integrations/, services/
+│   ├── vol.py             # Z-score de movimento por hora da sessão
+│   ├── niveis.py          # Perfil de volume, pivot points, fundos/topos
 │   ├── Dockerfile
 │   ├── docker-compose.yml
 │   ├── nginx.conf
@@ -190,6 +197,15 @@ OPENWEATHER_API_KEY=        NEWSAPI_KEY=              BRAPI_TOKEN=
 # Configurações pessoais
 HOME_ADDRESS=               DEFAULT_CITY=             APP_DOMAIN=
 VAPID_PUBLIC=               VAPID_PRIVATE=            VAPID_EMAIL=
+USER_NAME=                  ASSISTANT_NAME=           # identidade (USER_NAME obrigatória)
+
+# Alertas de mercado — opcional, default entre parênteses
+VOL_LIMIAR_ALERTA=          # (2.0)  z mínimo para alertar
+VOL_PIORA_REALERTA=         # (1.0)  piora para reavisar no mesmo dia
+NIVEIS_JANELA_SWING=        # (3)    barras de cada lado para fundo/topo
+NIVEIS_RETRACAO_MIN=        # (1.5)  % mínimo entre swings
+NIVEIS_N_FAIXAS=            # (40)   faixas do perfil de volume
+NIVEIS_AREA_VALOR=          # (0.70) fração do volume na área de valor
 ```
 
 ## Deploy
